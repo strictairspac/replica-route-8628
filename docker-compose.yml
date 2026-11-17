@@ -33,6 +33,9 @@ services:
       REDIS_URL: redis://redis:6379/0
       JWT_SECRET: ${JWT_SECRET:-local-replica-route-change-before-public-use}
       SEED_DEMO: ${SEED_DEMO:-true}
+      LEASE_SECONDS: ${LEASE_SECONDS:-15}
+      RECOVERY_INTERVAL_SECONDS: ${RECOVERY_INTERVAL_SECONDS:-2}
+      RECOVERY_COOLDOWN_SECONDS: ${RECOVERY_COOLDOWN_SECONDS:-5}
     ports: ["${BACKEND_PORT:-19247}:8000"]
     volumes: [run-artifacts:/artifacts]
     depends_on:

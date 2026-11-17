@@ -1,3 +1,11 @@
 -- Initial schema is applied idempotently by SQLAlchemy metadata.create_all.
--- Authoritative entities: users, nodes, request_sets, trials, audit_logs.
+-- Authoritative entities: users, nodes, request_sets, trials, trial_events, audit_logs.
 -- Routing request events and frozen input/result evidence are MySQL JSON.
+--
+-- Resumable execution (see src/config/migrate.py for the in-place upgrade of older databases):
+--   trials.cursor / total_events   committed-event counter and frozen event count
+--   trials.replay_state            JSON checkpoint: node ledger + per-session write positions
+--   trials.pause_cursor            exact pause boundary between pre-pause and post-resume decisions
+--   trials.lease_owner/token/expires_at  single-executor fence; token bumps invalidate stale writers
+--   trials.epoch                   increases on every pause; labels decisions of each resumed run
+--   trial_events(trial_id, seq)    one committed decision per request, unique => idempotent retries

@@ -12,6 +12,10 @@ from fastapi.responses import Response
 import json
 @router.get('/trials/{ident}')
 def detail(ident:int,db=Depends(db_session),user=Depends(current)):return service.detail(db,ident)
+@router.post('/trials/{ident}/pause')
+def pause(ident:int,db=Depends(db_session),user=Depends(writer)):return service.pause(db,ident,user)
+@router.post('/trials/{ident}/resume')
+def resume(ident:int,db=Depends(db_session),user=Depends(writer)):return service.resume(db,ident,user)
 @router.get('/trials/{ident}/export')
 def export(ident:int,db=Depends(db_session),user=Depends(current)):
     return Response(json.dumps(service.detail(db,ident),ensure_ascii=False,indent=2),media_type='application/json',headers={'Content-Disposition':f'attachment; filename="route-{ident}.json"'})

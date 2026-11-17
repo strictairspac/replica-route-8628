@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from sqlalchemy import text
 from src.config.database import Base,engine
+from src.config.migrate import migrate
 from src.models import entities
 from src.controllers.auth import router as auth
 from src.routes import nodes,request_sets,trials,audit
@@ -10,7 +11,7 @@ from src.middlewares.errors import ErrorMiddleware
 from src.middlewares.request_id import RequestIdMiddleware
 @asynccontextmanager
 async def lifespan(app):
-    Base.metadata.create_all(engine)
+    migrate()
     if os.getenv('SEED_DEMO','true')=='true':
         try:
             from scripts.seed_demo import seed

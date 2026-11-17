@@ -28,7 +28,7 @@ docker compose exec -T backend python -m scripts.seed_demo
 
 ## 一天的工作剧本
 
-09:00 operator登录；09:05查看harbor-primary位点105、north-replica位点104/150ms、south-replica位点105/20ms；09:10打开 `QY-1117-A` 请求集；09:15确认八事件时序；09:20以100ms延迟门槛和500ms粘滞执行 `shift-20261117`；09:25检查：写入主库位点106、100ms读仍走主库、600ms南站追平106、700ms读走南站、800ms南站故障、900ms回主库、1000ms主库故障、1100ms拒绝读取；09:30导出route-1.json；09:40 viewer核验拒绝理由；10:00 admin看审计。
+09:00 operator登录；09:05查看harbor-primary位点105、north-replica位点104/150ms、south-replica位点105/20ms；09:10打开 `QY-1117-A` 请求集；09:15确认八事件时序；09:20以100ms延迟门槛和500ms粘滞执行 `shift-20261117`；09:25检查：写入主库位点106、100ms读仍走主库、600ms南站追平106、700ms读走南站、800ms南站故障、900ms回主库、1000ms主库故障、1100ms拒绝读取；09:30导出route-1.json；09:32演练中途暂停，确认边界前请求保留决策；09:33继续并从游标恢复；09:34 worker重启后断点续跑；09:40 viewer核验拒绝理由；10:00 admin看审计。
 
 另有 `QY-1117-B` 高延迟副本回退主库、`QY-1117-C` 主库故障且副本未追平的拒绝案例。所有试验使用冻结快照，不会把模型故障写回节点台账。
 
@@ -53,25 +53,37 @@ docker compose exec -T backend python -m scripts.seed_demo
 
 输出每事件目标/拒绝、会话所需位点、实际位点、各副本四项资格、最终节点、会话状态、汇总和SHA256。相同输入产生相同摘要；不依赖随机数或外部网络。拒绝不安全读是正常业务结果，不算任务失败。快照与结果保存在MySQL，Redis只传递任务ID。
 
+### 断点恢复、暂停与并发接手
+
+每个事件是一个检查点：该请求的决策行、`trials.cursor`、以及续跑所需的节点台账/会话位点快照在同一事务里提交（`trial_events(trial_id,seq)` 唯一键保证同一请求不会被写两次）。因此：
+
+- **断点续跑**：worker 在中途退出后，另一个执行者从最后一次已提交的游标继续；已算完的请求保留原决策与位点，未算的请求沿用入队时冻结的 `input_snapshot`。恢复期间修改节点台账或请求集不影响该试验。
+- **单执行者栅栏**：接手是用 `lease_owner/lease_token/lease_expires_at` 的条件 UPDATE 争抢的；每次检查点都校验 owner+token+cursor。旧执行者、重复投递的队列消息和并发接手者都无法推进游标或重复写入结果。租约过期后由任一 worker 的恢复扫描重新入队。
+- **暂停/继续**：`POST /trials/{id}/pause` 用一条原子 UPDATE 确认暂停，把 `pause_cursor` 冻结在已提交边界并提升 fence token。边界之前的请求保留原决策（算暂停前），边界处正在处理的请求若未提交则整笔回滚、恢复后重新决策（算恢复后），不会出现半条请求。`POST /trials/{id}/resume` 把 paused 原子改回 queued 并从游标继续。
+- **完成/失败**：只有当前 fence 持有者能把试验置为 completed 或 failed；终态结果不会被暂停、继续或重试覆盖。`result` 由已提交事件行确定性重建，摘要与一次性模拟一致。
+- **可观测**：列表与详情返回 `status`（queued/running/paused/completed/failed）、`cursor/total_events/percent/pause_cursor`；未完成试验只展示已提交的 `partial_trace`。旧试验仍可查看与导出。
+
+默认 `LEASE_SECONDS=15`、`RECOVERY_INTERVAL_SECONDS=2`，可在 `.env` 调整。
+
 ## 工程说明
 
 |服务|技术|职责|
 |---|---|---|
 |frontend|原生HTML/CSS/JS + Nginx|4业务页、编辑表单、共享组件、/api代理|
 |backend|Python3.11/FastAPI/SQLAlchemy/PyJWT|校验、权限、审计、快照与导出|
-|worker|Python3.11|会话时序与路由算法|
+|worker|Python3.11|会话时序与路由算法、检查点续跑与租约接手|
 |db|MySQL8.0|真实持久化业务和JSON证据|
 |redis|Redis7|持久队列|
 
 各实体贯穿 `backend/src/{models,schemas,services,routes}` 和 `frontend/src/{api,stores,pages}`；其余强制目录含controllers/middlewares/config/constants/utils、components/common/hooks/types/router。三组件table/badge/frame共用；hooks/session/feedback和utils/forms/html共用；request_id/errors双中间件。
 
-共享枚举角色admin/operator/viewer与任务queued/running/completed/failed位于 `backend/src/constants/enums.py` / `frontend/src/constants/enums.js`，security/trials、frame/badge消费。节点角色primary/replica和状态healthy/down由node schema及前端表单定义，事件类型由request_set schema及路由算法定义。
+共享枚举角色admin/operator/viewer与任务queued/running/paused/completed/failed位于 `backend/src/constants/enums.py` / `frontend/src/constants/enums.js`，security/trials、frame/badge消费。节点角色primary/replica和状态healthy/down由node schema及前端表单定义，事件类型由request_set schema及路由算法定义。
 
 环境变量见.env.example：COMPOSE_PROJECT_NAME、三端口、DB_PASSWORD、JWT_SECRET、SEED_DEMO。默认密码仅本地演示、JWT8小时；seed自然键仅补缺失，不覆盖修改。schema由metadata.create_all初始建表，无在线升级引擎。5服务均健康检查，backend/worker依赖健康db/redis，frontend依赖backend；数据库、Redis、worker产物使用命名卷。
 
 本地开发：Python3.11安装backend/requirements.txt、配置DATABASE_URL/REDIS_URL，在backend运行 `uvicorn src.main:app --reload` 和 `python -m src.worker`，前端经Nginx同源代理。停止清空：`docker compose down -v --remove-orphans`。
 
-限制：单worker串行、无生产任务重试/崩溃续跑；不模拟网络随机抖动、自动选主或完整GTID集合。Google Fonts离线回退，业务不依赖字体网络。
+限制：单个 Redis 流内由多个 worker 竞争，靠租约与 fence 保证同一试验只有一个执行者；不模拟网络随机抖动、自动选主或完整GTID集合。暂停/继续与断点恢复针对进程崩溃和队列重复投递，不提供跨版本 schema 迁移引擎（启动时只做加列式原地升级）。Google Fonts离线回退，业务不依赖字体网络。
 
 ## License
 
